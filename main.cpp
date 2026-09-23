@@ -1173,7 +1173,7 @@ void cpp_group_rank_dense(
 }
 
 // export module
-PYBIND11_MODULE(matrix_module, m) {
+PYBIND11_MODULE(_fastwilcoxon, m) {
 
     m.doc() = "High-performance matrix operations for wilcoxon based statistics and ranking";
 

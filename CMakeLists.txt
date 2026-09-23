@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(pypresto LANGUAGES CXX)
+project(FastWilcoxon LANGUAGES CXX)
 
 # --- 1. Basic Set ---
 set(CMAKE_CXX_STANDARD 17)
@@ -128,36 +128,36 @@ else()
 endif()
 
 # --- 5. define target module ---
-pybind11_add_module(matrix_module main.cpp)
+pybind11_add_module(_fastwilcoxon main.cpp)
 
 # NumPy headers (only if needed)
-target_include_directories(matrix_module PRIVATE ${NUMPY_INCLUDE_DIR})
+target_include_directories(_fastwilcoxon PRIVATE ${NUMPY_INCLUDE_DIR})
 
 # BLAS
 if(WIN32)
-    target_include_directories(matrix_module PRIVATE "${OPENBLAS_ROOT}/include")
-    target_link_libraries(matrix_module PRIVATE "${OPENBLAS_ROOT}/lib/libopenblas.dll.a")
+    target_include_directories(_fastwilcoxon PRIVATE "${OPENBLAS_ROOT}/include")
+    target_link_libraries(_fastwilcoxon PRIVATE "${OPENBLAS_ROOT}/lib/libopenblas.dll.a")
 else()
-    target_include_directories(matrix_module PRIVATE ${BLAS_INCLUDE_DIRS})
-    target_link_libraries(matrix_module PRIVATE ${BLAS_LIBRARIES})
+    target_include_directories(_fastwilcoxon PRIVATE ${BLAS_INCLUDE_DIRS})
+    target_link_libraries(_fastwilcoxon PRIVATE ${BLAS_LIBRARIES})
 endif()
 
 # OpenMP
-target_link_libraries(matrix_module PRIVATE OpenMP::OpenMP_CXX)
+target_link_libraries(_fastwilcoxon PRIVATE OpenMP::OpenMP_CXX)
 
 # compilation options
 if(MSVC)
-    target_compile_options(matrix_module PRIVATE /W3 /O2)
+    target_compile_options(_fastwilcoxon PRIVATE /W3 /O2)
 else()
-    target_compile_options(matrix_module PRIVATE -O3 -Wall -fvisibility=hidden)
+    target_compile_options(_fastwilcoxon PRIVATE -O3 -Wall -fvisibility=hidden)
 endif()
 
 # macOS RPATH
 if(APPLE)
-    set_target_properties(matrix_module PROPERTIES
+    set_target_properties(_fastwilcoxon PROPERTIES
             INSTALL_RPATH "@loader_path"
             BUILD_WITH_INSTALL_RPATH TRUE
     )
 endif()
 
-install(TARGETS matrix_module DESTINATION .)
+install(TARGETS _fastwilcoxon DESTINATION .)

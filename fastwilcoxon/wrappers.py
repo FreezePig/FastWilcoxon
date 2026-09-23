@@ -12,11 +12,11 @@ import numpy as np
 from typing import List, Optional
 
 try:
-    from . import matrix_module as mm
+    from . import _fastwilcoxon as fw
 except ImportError as e:
     raise ImportError(
-        "Failed to import C++ extension 'matrix_module'. "
-        "Please ensure the package is installed correctly (not just cloned)."
+        "Failed to import C++ extension '_fastwilcoxon'. "
+        "Please ensure the package is installed correctly."
     ) from e
 
 integer_dtypes = {
@@ -432,7 +432,7 @@ def sumGroups_csc(
     
     # Call the C++ function
     try:
-        result = mm.cpp_sumGroups_csc(x, p, i, ncol, groups, ngroups, nthreads)
+        result = fw.cpp_sumGroups_csc(x, p, i, ncol, groups, ngroups, nthreads)
         return result
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -502,7 +502,7 @@ def sumGroups_csr(
     
     # Call the C++ function
     try:
-        result = mm.cpp_sumGroups_csr(x, p, i, ncol, nrow, groups, ngroups, nthreads)
+        result = fw.cpp_sumGroups_csr(x, p, i, ncol, nrow, groups, ngroups, nthreads)
         return result
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -574,7 +574,7 @@ def sumGroups_csc_T(
     
     # Call the C++ function
     try:
-        result = mm.cpp_sumGroups_csc_T(x, p, i, ncol, nrow, groups, ngroups, nthreads)
+        result = fw.cpp_sumGroups_csc_T(x, p, i, ncol, nrow, groups, ngroups, nthreads)
         return result
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -648,7 +648,7 @@ def sumGroups_csr_T(
     
     # Call the C++ function
     try:
-        result = mm.cpp_sumGroups_csr_T(x, p, i, nrow, groups, ngroups, nthreads)
+        result = fw.cpp_sumGroups_csr_T(x, p, i, nrow, groups, ngroups, nthreads)
         return result
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -694,7 +694,7 @@ def sumGroups_dense(
         
     # Call the C++ function
     try:
-        result = mm.cpp_sumGroups_dense(x, groups, ngroups)
+        result = fw.cpp_sumGroups_dense(x, groups, ngroups)
         return result
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -744,7 +744,7 @@ def sumGroups_dense_T(
         
     # Call the C++ function
     try:
-        result = mm.cpp_sumGroups_dense_T(x, groups, ngroups)
+        result = fw.cpp_sumGroups_dense_T(x, groups, ngroups)
         return result
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -810,7 +810,7 @@ def nnzeroGroups_csc(
 
     # Call the C++ function
     try:
-        result = mm.cpp_nnzeroGroups_csc(p, i, ncol, groups, ngroups, nthreads)
+        result = fw.cpp_nnzeroGroups_csc(p, i, ncol, groups, ngroups, nthreads)
         return result
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -869,7 +869,7 @@ def nnzeroGroups_csr(
     
     # Call the C++ function
     try:
-        result = mm.cpp_nnzeroGroups_csr(p, i, ncol, nrow, groups, ngroups, nthreads)
+        result = fw.cpp_nnzeroGroups_csr(p, i, ncol, nrow, groups, ngroups, nthreads)
         return result
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -935,7 +935,7 @@ def nnzeroGroups_csc_T(
         
     # Call the C++ function
     try:
-        result = mm.cpp_nnzeroGroups_csc_T(p, i, ncol, nrow, groups, ngroups, nthreads)
+        result = fw.cpp_nnzeroGroups_csc_T(p, i, ncol, nrow, groups, ngroups, nthreads)
         return result
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -1003,7 +1003,7 @@ def nnzeroGroups_csr_T(
         
     # Call the C++ function
     try:
-        result = mm.cpp_nnzeroGroups_csr_T(p, i, ncol, nrow, groups, ngroups, nthreads)
+        result = fw.cpp_nnzeroGroups_csr_T(p, i, ncol, nrow, groups, ngroups, nthreads)
         return result
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -1056,7 +1056,7 @@ def nnzeroGroups_dense(
 
     # Call the C++ function
     try:
-        result = mm.cpp_nnzeroGroups_dense(x, groups, ngroups, nthreads)
+        result = fw.cpp_nnzeroGroups_dense(x, groups, ngroups, nthreads)
         return result
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -1109,7 +1109,7 @@ def nnzeroGroups_dense_T(
         
     # --- Call C++ backend ---
     try:
-        result = mm.cpp_nnzeroGroups_dense_T(x, groups, ngroups, nthreads)
+        result = fw.cpp_nnzeroGroups_dense_T(x, groups, ngroups, nthreads)
         return result
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -1199,7 +1199,7 @@ def rank_matrix_csc(
     
     # Call the C++ function
     try:
-        result = mm.cpp_rank_matrix_csc(x, p, rank_data_out, nrow, ncol, nthreads)
+        result = fw.cpp_rank_matrix_csc(x, p, rank_data_out, nrow, ncol, nthreads)
         return result
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -1302,7 +1302,7 @@ def rank_matrix_csr(
     
     # Call the C++ function
     try:
-        result_dict = mm.cpp_rank_matrix_csr(x, p, i, rank_data_out, nrow, ncol, nthreads)
+        result_dict = fw.cpp_rank_matrix_csr(x, p, i, rank_data_out, nrow, ncol, nthreads)
         return result_dict
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -1405,7 +1405,7 @@ def rank_matrix_csr_(
     
     # Call the C++ function
     try:
-        result = mm.cpp_rank_matrix_csr_(x, p, i, rank_data_out, nrow, ncol, nthreads)
+        result = fw.cpp_rank_matrix_csr_(x, p, i, rank_data_out, nrow, ncol, nthreads)
         return result
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -1453,7 +1453,7 @@ def rank_matrix_dense(
 
     # Call C++ function
     try:
-        result_dict = mm.cpp_rank_matrix_dense(x, nthreads)
+        result_dict = fw.cpp_rank_matrix_dense(x, nthreads)
         return result_dict
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -1531,7 +1531,7 @@ def group_rank_csc(
     
     # Call the C++ function
     try:
-        mm.cpp_group_rank_csc(x, rank_data_out, p, i, groups, ncol, nthreads)
+        fw.cpp_group_rank_csc(x, rank_data_out, p, i, groups, ncol, nthreads)
         return rank_data_out
     except Exception as e:
         raise RuntimeError(f"C++ function failed: {e}")
@@ -1582,7 +1582,7 @@ def group_rank_dense(
     validate_denmatrix_input(groups, np.max(groups) + 1, cell_num=nrow)
     # call c++ function
     try:
-        mm.cpp_group_rank_dense(x, rank_data_out, groups, nthreads)
+        fw.cpp_group_rank_dense(x, rank_data_out, groups, nthreads)
         return rank_data_out
     except Exception as e:
         print(f"C++ function failed: {e}")
