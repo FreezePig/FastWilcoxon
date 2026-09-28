@@ -127,10 +127,11 @@ def _normalize_single_labels(
             raise ValueError(
                 f"labels are missing {len(missing)} cached observations"
             )
-        labels_array = labels.reindex(expected_index).to_numpy()
-
-        if labels_array.isna().any():
+        labels_reindex = labels.reindex(expected_index)
+        if labels_reindex.isna().any():
             raise ValueError("Some adata observations do not have labels.")
+        
+        labels_array = labels_reindex.to_numpy()
     else:
         labels_array = np.asarray(labels)
 

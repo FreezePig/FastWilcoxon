@@ -307,16 +307,25 @@ py::array_t<double> cpp_sumGroups_dense(
 
     std::memset(res_.mutable_data(0, 0), 0, sizeof(double) * ngroups * ncols);
 
+    const py::buffer_info x_info = x.request();
+    const double* x_ptr = static_cast<const double*>(x_info.ptr);
+
+    // NumPy strides use bytes; CBLAS increments use elements.
+    const Py_ssize_t row_stride = x_info.strides[0] / static_cast<Py_ssize_t>(sizeof(double));
+    const Py_ssize_t col_stride = x_info.strides[1] / static_cast<Py_ssize_t>(sizeof(double));
+
     // traverse each row
     for (size_t r = 0; r < nrows; ++r) {
         size_t group = groups_(r);
-        const double* x_row_ptr = &x_(r, 0);
+        const double* x_row_ptr = x_ptr + static_cast<Py_ssize_t>(r) * row_stride;
         double* res_group_ptr = &res_(group, 0);
         cblas_daxpy(
-            static_cast<int>(ncols),  // length of vector
-            1.0,                      // alpha
-            x_row_ptr, 1,             // input vector x
-            res_group_ptr, 1          // output vector y
+            static_cast<int>(ncols),      // length of vector
+            1.0,                          // alpha
+            x_row_ptr,                    // input vector x
+            static_cast<int>(col_stride), // incX
+            res_group_ptr,                // output vector y
+            1                             // incY
         );
     }
 
@@ -344,16 +353,25 @@ py::array_t<double> cpp_sumGroups_dense_T(
     // initialize the result matrix to 0
     std::memset(res_.mutable_data(0, 0), 0, sizeof(double) * ngroups * nrows);
 
+    const py::buffer_info x_info = x.request();
+    const double* x_ptr = static_cast<const double*>(x_info.ptr);
+
+    // NumPy strides use bytes; CBLAS increments use elements.
+    const Py_ssize_t row_stride = x_info.strides[0] / static_cast<Py_ssize_t>(sizeof(double));
+    const Py_ssize_t col_stride = x_info.strides[1] / static_cast<Py_ssize_t>(sizeof(double));
+
     // traverse each column
     for (size_t c = 0; c < ncols; ++c) {
         size_t group = groups_(c); // get the current column's group
-        const double* x_col_ptr = &x_(0, c);
+        const double* x_col_ptr = x_ptr + static_cast<Py_ssize_t>(c) * col_stride;
         double* res_group_ptr = &res_(group, 0);
         cblas_daxpy(
-            static_cast<int>(nrows),                    // length of vector
-            1.0,                                        // alpha
-            x_col_ptr, static_cast<int>(ncols),         // input vector x
-            res_group_ptr, 1                            // output vector y
+            static_cast<int>(nrows),         // length of vector
+            1.0,                             // alpha
+            x_col_ptr,                       // input vector x
+            static_cast<int>(row_stride),    // incX
+            res_group_ptr,                   // output vector y
+            1                                // incY
         );
     }
     return res;
