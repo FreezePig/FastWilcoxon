@@ -18,7 +18,10 @@ dependencies = [
     "pandas",
     "anndata",
     "scipy>=1.10,<2",
-    "statsmodels"
+    "statsmodels",
+    "adjustText",
+    "matplotlib",
+    "seaborn"
 ]
 
 [tool.scikit-build]

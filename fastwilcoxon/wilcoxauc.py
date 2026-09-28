@@ -6,7 +6,7 @@ import pandas as pd
 import scipy.sparse as sp
 from statsmodels.stats.multitest import multipletests
 
-from typing import Union, Optional, List, Literal
+from typing import Union, Optional, List, Literal, Sequence
 
 from .utils import *
 
@@ -55,7 +55,7 @@ def wilcoxauc(
     n_genes : int, optional
         Number of top genes to return per group.
     corr_method : Literal['benjamini-hochberg', 'bonferroni'] (default: 'benjamini-hochberg') 
-        p-value correction method. Used only for 't-test', 't-test_overestim_var', and 'wilcoxon'.
+        p-value correction method. Used only for 'benjamini-hochberg', 'bonferroni'.
 
     # === anndata parameters (only when data is AnnData) ===
     copy : bool, default False
@@ -205,12 +205,235 @@ def wilcoxauc(
         else:
             adata = data
 
-        key = key_added if key_added is not None else 'genes_groups_multi_index'
+        key = key_added if key_added is not None else '_fast_wilcoxon'
         adata.uns[key] = long_df
         
         return adata if copy else None
     else:
         return long_df
+
+
+def find_all_markers(
+    data: Union[AnnData, np.ndarray, sp.spmatrix, pd.DataFrame], 
+    groupby: Union[str, np.ndarray, pd.Series, None] = None,
+    *,
+    groups='all',
+    features: Optional[Sequence] = None,
+    n_genes: Optional[int] = None,
+    only_pos: bool = False,
+    min_pct: float = 0.1,
+    min_diff_pct: float = -np.inf,
+    logfc_threshold = 0.0,
+    padj_threshold = 0.05,
+    corr_method: Literal['benjamini-hochberg', 'bonferroni'] = 'benjamini-hochberg',
+    use_raw: bool = False,
+    layer: Optional[str] = None,
+    verbose: bool = True,
+    nthreads: int = -1,
+    **kwargs
+):
+    """
+    Wrapper for wilcoxauc to find all marker genes for all groups.
+    
+    Parameters
+    ----------
+    data : AnnData, np.ndarray, sp.spmatrix, or pd.DataFrame
+        Input data. If AnnData, rows=cells, cols=genes.
+    groupby : str or array-like, optional
+        - If data is AnnData: key in adata.obs
+        - If data is matrix: 1D array of group labels (length = n_cells)
+    groups : 'all' or list of str, optional
+        Groups to test.
+    features : array-like or list, optional
+        Features/genes to test. If None, all features are tested.
+    n_genes : int, optional
+        Number of top genes to return per group.
+    only_pos : bool, default False
+        If True, only return genes with positive log fold change.
+    min_pct : float, default 0.1
+        Minimum fraction of cells expressing the gene in either group.
+    min_diff_pct : float, default -np.inf
+        Minimum difference in fraction of cells expressing the gene between groups.
+    logfc_threshold : float, default 0.0
+        Minimum log fold change threshold for selected genes.
+    padj_threshold : float, default 0.05
+        Minimum adjusted p-value threshold for selected genes.
+    corr_method : Literal['benjamini-hochberg', 'bonferroni']
+        p-value correction method. Used only for 'benjamini-hochberg' and 'bonferroni'.
+    use_raw : bool, default False
+        Use adata.raw if available.
+    layer : str, optional
+        Use adata.layers[layer] instead of adata.X.
+    verbose : bool, default True;
+        Print progress messages.
+    nthreads : int, default -1
+        Number of threads to use for computation. -1 means using all available cores.
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame containing marker gene statistics for each group.
+    """
+
+    if features is not None:
+        features = _resolve_feature_mask(data, features)
+    
+    _result = wilcoxauc(data=data, 
+                        groupby=groupby, 
+                        groups=groups, 
+                        reference='rest', 
+                        mask_var=features, 
+                        n_genes=None,
+                        corr_method=corr_method,
+                        use_raw=use_raw,
+                        layer=layer,
+                        key_added="_temp_key",
+                        copy=False,
+                        verbose=verbose,
+                        nthreads=nthreads,
+                        **kwargs)
+
+    return _postfilter_markers(_result, 
+                               data, 
+                               min_pct, 
+                               min_diff_pct, 
+                               only_pos, 
+                               logfc_threshold, 
+                               padj_threshold, 
+                               n_genes)
+
+
+def find_markers(
+    data: Union[AnnData, np.ndarray, sp.spmatrix, pd.DataFrame],
+    groupby: Union[str, np.ndarray, pd.Series] = None,
+    ident_1: Union[str, int] = None,
+    ident_2: Union[str, int] = None,
+    *,
+    cells_1: Optional[Union[Sequence[str], Sequence[int], np.ndarray, pd.Index]] = None,
+    cells_2: Optional[Union[Sequence[str], Sequence[int], np.ndarray, pd.Index]] = None,
+    features: Optional[Sequence] = None,
+    n_genes: Optional[int] = None,
+    only_pos: bool = False,
+    min_pct: float = 0.01,
+    min_diff_pct: float = -np.inf,
+    logfc_threshold: float = 0.0,
+    padj_threshold: float = 0.05,
+    corr_method: Literal["benjamini-hochberg", "bonferroni"] = "benjamini-hochberg",
+    use_raw: bool = False,
+    layer: Optional[str] = None,
+    verbose: bool = True,
+    nthreads: int = -1,
+    **kwargs
+):
+    if features is not None:
+        features = _resolve_feature_mask(data, features)
+
+    # using ident_1 and ident_2 if groupby is specified
+    if groupby is not None:
+        if isinstance(data, AnnData):
+            if groupby not in data.obs:
+                raise KeyError(f"'{groupby}' not found in adata.obs")
+            group_labels = np.asarray(data.obs[groupby])
+        else:
+            # for ndarray, sparse matrix and pd.DataFrame, 
+            # groupby should be an 1d array-like labels
+            group_labels = np.asarray(groupby)
+            if group_labels.ndim != 1 or len(group_labels) != data.shape[0]:
+                raise ValueError(f"groupby must be 1D array-like of length {data.shape[0]}")
+
+        if ((ident_1 is None) or (ident_2 is None) 
+            or (ident_1 not in group_labels) or (ident_2 not in group_labels)):
+            raise ValueError("Both ident_1 and ident_2 must be specified and present in group labels.")
+        
+        _result = wilcoxauc(data=data,
+                            groupby=groupby,
+                            groups=[ident_1],
+                            reference=ident_2,
+                            mask_var=features,
+                            n_genes=None,
+                            corr_method=corr_method,
+                            copy=False,
+                            use_raw=use_raw,
+                            layer=layer,
+                            key_added="_temp_key",
+                            verbose=verbose,
+                            nthreads=nthreads,
+                            **kwargs)
+
+    # using cells_1 and cells_2 if groupby is not specified
+    else:
+        data_copy = data.copy()
+        if (cells_1 is None) or (cells_2 is None):
+            raise ValueError("When 'groupby' is not specified, " \
+            "both 'cells_1' and 'cells_2' must be provided.")
+        
+        # for data types of AnnData, using obs_names to filter cells
+        if isinstance(data_copy, AnnData):
+            all_barcode = np.asarray(data_copy.obs_names)
+            target = np.isin(all_barcode, cells_1)
+            reference = np.isin(all_barcode, cells_2)
+            if np.any(target) and np.any(reference):
+                sub_data = data_copy[target | reference, :]
+                group_labels = np.where(target[target | reference], 'target', 'reference')
+                sub_data.obs['_temp_label'] = group_labels
+                _result = wilcoxauc(data=sub_data,
+                                    groupby="_temp_label",
+                                    groups=["target"],
+                                    reference="reference",
+                                    mask_var=features,
+                                    n_genes=None,
+                                    corr_method=corr_method,
+                                    copy=False,
+                                    use_raw=use_raw,
+                                    layer=layer,
+                                    key_added="_temp_key",
+                                    verbose=verbose,
+                                    nthreads=nthreads,
+                                    **kwargs)
+            else:
+                raise ValueError("None of the specified cells in 'cells_1' or 'cells_2' " \
+                "are present in the AnnData object.")
+        
+        # for data types of ndarray, sparse matrix or DataFrame, 
+        # using row indices to filter cells
+        elif isinstance(data_copy, (np.ndarray, sp.spmatrix, pd.DataFrame)):
+            all_indices = np.arange(data_copy.shape[0])
+            target = np.isin(all_indices, cells_1)
+            reference = np.isin(all_indices, cells_2)
+            if np.any(target) and np.any(reference):
+                sub_data = (data_copy.loc[target | reference, :] 
+                            if isinstance(data_copy, pd.DataFrame) 
+                            else data_copy[target | reference, :])
+                group_labels = np.where(target[target | reference], 'target', 'reference')
+                _result = wilcoxauc(data=sub_data,
+                                    groupby=group_labels,
+                                    groups=["target"],
+                                    reference="reference",
+                                    mask_var=features,
+                                    n_genes=None,
+                                    corr_method=corr_method,
+                                    copy=False,
+                                    use_raw=use_raw,
+                                    layer=layer,
+                                    key_added="_temp_key",
+                                    verbose=verbose,
+                                    nthreads=nthreads,
+                                    **kwargs)
+            else:
+                raise ValueError("for data types of ndarray, sparse matrix or DataFrame, " \
+                                 "the specified 'cells_1' and 'cells_2' should be row indices of the data matrix.")
+        else:
+            raise TypeError(f"Unsupported data type: {type(data)}")
+
+    return _postfilter_markers(_result, 
+                               data if groupby is not None else sub_data, 
+                               min_pct, 
+                               min_diff_pct, 
+                               only_pos, 
+                               logfc_threshold, 
+                               padj_threshold, 
+                               n_genes)
+
 
 def calc_gini(
     data: Union[AnnData, np.ndarray, sp.spmatrix, pd.DataFrame], 
@@ -277,6 +500,7 @@ def calc_gini(
     
     # 7. Return results
     return long_df
+
 
 def prefilter_matrix(
     data: Union[AnnData, np.ndarray, sp.spmatrix, pd.DataFrame], 
@@ -386,6 +610,7 @@ def prefilter_matrix(
 
     raise TypeError(f"Unsupported data type: {type(data)}")
 
+
 def _extract_data_and_groups(data, groupby, layer = None, use_raw = None):
     """Extract data matrix X, group labels y and variable names from input data"""
     if isinstance(data, AnnData):
@@ -414,6 +639,7 @@ def _extract_data_and_groups(data, groupby, layer = None, use_raw = None):
     else:
         raise TypeError(f"Unsupported data type: {type(data)}")
 
+
 def _from_anndata(adata, groupby, layer, use_raw):
     """Extract data matrix X and group labels y from AnnData"""
     if groupby not in adata.obs:
@@ -432,9 +658,12 @@ def _from_anndata(adata, groupby, layer, use_raw):
     # extract group labels
     y = adata.obs[groupby].values
     y = np.asarray(y)
-    var_names = adata.var_names.tolist()
+    var_names = (adata.var_names.tolist() 
+                 if not use_raw 
+                 else adata.raw.var_names.tolist())
 
     return X, y, var_names
+
 
 def _process_mask_var(mask_var, data, is_adata, n_genes):
     if isinstance(mask_var, str):
@@ -450,6 +679,7 @@ def _process_mask_var(mask_var, data, is_adata, n_genes):
         if len(mask) != n_genes:
             raise ValueError("mask_var length must match number of genes")
     return mask
+
 
 def _build_nonzero_mask(X):
     """Return a boolean mask of genes that are not all zero."""
@@ -494,6 +724,99 @@ def _encode_groups(y, groups):
         'code_to_label': code_to_label,
         'target_labels': target_labels,
     }
+
+
+def _resolve_feature_mask(data, features):
+    """
+    Resolve features to a boolean mask for gene selection, 
+    Used in find_all_markers and find_markers
+    """
+    if isinstance(features, str):
+        features = [features]
+    feature_array = np.asarray(features)
+    if feature_array.dtype == bool:
+        if not np.any(feature_array):
+            raise ValueError("No features selected by the boolean mask.")
+        return feature_array
+
+    if isinstance(data, AnnData):
+        gene_list = pd.Index(data.var_names)
+    elif isinstance(data, pd.DataFrame):
+        gene_list = pd.Index(data.columns)
+    elif isinstance(data, (np.ndarray, sp.spmatrix)):
+        if feature_array.dtype != bool:
+            raise ValueError("Feature array must be boolean " \
+            "with ndarray or sparse matrix data types.")
+        return feature_array
+    else:
+        raise TypeError(f"Unsupported data type: {type(data)}")
+    
+    requested = pd.Index(feature_array).drop_duplicates()
+    intergene_list = gene_list.intersection(requested)
+    if len(intergene_list) == 0:
+        raise ValueError("No requested features found in data.")
+    if len(intergene_list) < len(requested):
+        missing = requested.difference(gene_list)
+        print(f"Warning: {len(missing)} requested features not found in data: {missing.tolist()}")
+    mask = gene_list.isin(requested)
+
+    return np.asarray(mask, dtype=bool)
+
+
+def _postfilter_markers(_result, 
+                        data, 
+                        min_pct, 
+                        min_diff_pct, 
+                        only_pos, 
+                        logfc_threshold, 
+                        padj_threshold, 
+                        n_genes):
+    """ 
+    Post-filtering of marker genes based on thresholds and sorting.
+    Only used in find_all_markers and find_markers after wilcoxauc computation.
+    """
+    if _result is not None:
+        marker_df = _result
+    else:
+        marker_df = data.uns["_temp_key"]
+        del data.uns["_temp_key"]
+
+    # filtering genes
+    pct1 = marker_df['pct_1']
+    pct2 = marker_df['pct_2']
+    logfc = marker_df['logfoldchanges']
+    keep = np.ones(len(marker_df), dtype=bool)
+    # min_pct filter: keep genes where either pct_1 or pct_2 >= min_pct
+    keep &= (pct1 >= min_pct * 100) | (pct2 >= min_pct * 100)
+    # min_diff_pct filter: keep genes where abs(pct_1 - pct_2) >= min_diff_pct
+    if np.isfinite(min_diff_pct):
+        keep &= np.abs(pct1 - pct2) >= min_diff_pct * 100
+    # logfc_threshold filter: keep genes where logfoldchanges >= logfc_threshold
+    if only_pos:
+        keep &= logfc >= logfc_threshold
+    else:
+        keep &= np.abs(logfc) >= logfc_threshold
+    # sigificance filter: keep genes where padj < 0.05
+    if padj_threshold:
+        keep &= marker_df['padj'] < padj_threshold
+    filtered_df = marker_df[keep].copy()
+
+    # sort by cluster, padj, score
+    if only_pos:
+        markers = filtered_df.sort_values(by=['cluster', 'logfoldchanges', 'padj'], 
+                                          ascending=[True, False, True])
+    else:
+        filtered_df["_abs_logfc"] = filtered_df["logfoldchanges"].abs()
+        markers = filtered_df.sort_values(by=['cluster', '_abs_logfc', 'padj'], 
+                                          ascending=[True, False, True]).drop(columns=["_abs_logfc"])
+    if n_genes is not None:
+        markers = (
+            markers.groupby('cluster', sort=False)
+            .head(n_genes)
+            .reset_index(drop=True)
+        )
+    return markers
+
 
 def _wilcoxauc_core(X, y, corr_method, nthreads, verbose):
     """
@@ -592,6 +915,7 @@ def _wilcoxauc_core(X, y, corr_method, nthreads, verbose):
         'lfc_sec': lfc_sec,
     }
 
+
 def _format_results(results_, target_codes, code_to_label, 
                     var_names, n_genes = None, sort = True):
     """format results into long data"""
@@ -613,6 +937,7 @@ def _format_results(results_, target_codes, code_to_label,
         long_df = long_df.groupby('cluster', sort=False).head(n_genes).reset_index(drop=True)
 
     return long_df
+
 
 def _get_second_largest(arr: np.ndarray) -> np.ndarray:
     """
