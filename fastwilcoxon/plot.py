@@ -26,6 +26,7 @@ _AUC_CMAP = LinearSegmentedColormap.from_list(
     ["#FFFBF0", "#FEE8C8", "#FDBB84", "#E34A33", "#99000D"],
 )
 _AUC_NORM = PowerNorm(gamma=0.55, vmin=0.0, vmax=1.0)
+_ANNOTATION_OFFSETS = ((30, 30), (-30, 30), (30, -30), (-30, -30), (42, 0), (-42, 0))
 _ANNOTATION_KEYS = ("AUC", "adjp", "logfc", "delta_pct", "delta_logfc", "delta_pct2")
 _Annotation = Optional[Union[int, str, Sequence[str], Mapping[str, int]]]
 
@@ -177,6 +178,14 @@ def _annotate_genes(
     ]
     if not texts:
         return
+    ax.figure.canvas.draw()
+    inverse_transform = ax.transData.inverted()
+    for index, (text, x_value, y_value) in enumerate(zip(texts, target_x, target_y)):
+        offset_x, offset_y = _ANNOTATION_OFFSETS[index % len(_ANNOTATION_OFFSETS)]
+        offset_scale = 1 + 0.3 * (index // len(_ANNOTATION_OFFSETS))
+        target_display = ax.transData.transform((x_value, y_value))
+        text_display = target_display + (offset_x * offset_scale, offset_y * offset_scale)
+        text.set_position(inverse_transform.transform(text_display))
     adjust_text(
         texts,
         x=plot_df[x].to_numpy(),
@@ -186,30 +195,24 @@ def _annotate_genes(
         ax=ax,
         ensure_inside_axes=True,
         prevent_crossings=True,
-        expand=(1.1, 1.2),
-        time_lim=1.0,
+        expand=(1.4, 1.6),
+        force_text=(0.5, 0.5),
+        force_static=(0.2, 0.2),
+        force_pull=(0.2, 0.2),
+        force_explode=(0.2, 0.2),
+        explode_radius=60,
+        max_move=(20, 20),
+        min_arrow_len=0,
+        iter_lim=50,
+        arrowprops={
+            "arrowstyle": "-",
+            "color": "#4D4D4D",
+            "linewidth": 0.8,
+            "connectionstyle": "arc3,rad=0",
+            "shrinkA": 0,
+            "shrinkB": 0,
+        },
     )
-    ax.figure.canvas.draw()
-    renderer = ax.figure.canvas.get_renderer()
-    inverse_transform = ax.transData.inverted()
-    for text, target_x_value, target_y_value in zip(texts, target_x, target_y):
-        text_box = text.get_window_extent(renderer=renderer)
-        target_display = ax.transData.transform((target_x_value, target_y_value))
-        if text_box.x0 + text_box.width / 2 >= target_display[0]:
-            text_anchor = (text_box.x0, text_box.y0 + text_box.height / 2)
-            elbow = (text_anchor[0] - 10, text_anchor[1])
-        else:
-            text_anchor = (text_box.x1, text_box.y0 + text_box.height / 2)
-            elbow = (text_anchor[0] + 10, text_anchor[1])
-        leader_points = inverse_transform.transform([target_display, elbow, text_anchor])
-        ax.plot(
-            leader_points[:, 0],
-            leader_points[:, 1],
-            color="#4D4D4D",
-            linewidth=0.8,
-            solid_capstyle="round",
-            zorder=text.get_zorder() - 1,
-        )
 
 
 def volcano_plot(
