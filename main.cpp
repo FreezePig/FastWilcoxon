@@ -40,7 +40,7 @@ int cpp_resolve_nthreads(int nthreads) {
 #ifdef FASTWILCOXON_WITH_MKL
 static_assert(sizeof(MKL_INT) == sizeof(index_t) && std::is_signed<MKL_INT>::value,
               "MKL_INT must be a signed 64-bit integer");
-using csr_index_array = py::array_T<MKL_INT, py::array::c_style>;
+using csr_index_array = py::array_t<MKL_INT, py::array::c_style>;
 namespace {
     void check_mkl_sparse_status(sparse_status_t status, const char* operation) {
         if (status != SPARSE_STATUS_SUCCESS) {
