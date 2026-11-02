@@ -8,13 +8,22 @@
 #include <algorithm>
 #include <vector>
 #include <cstdint>
+#include <cstring>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
 #include <omp.h>
 
 #ifdef _MSC_VER
 #include <BaseTsd.h>
 typedef SSIZE_T ssize_t;
 #endif
+#ifdef FASTWILCOXON_WITH_MKL
+#include <mkl.h>
+#else
 #include <cblas.h>
+#endif
 
 using namespace pybind11::literals;
 namespace py = pybind11;
@@ -22,6 +31,232 @@ namespace py = pybind11;
 constexpr double TIE_TOL = 1e-5;
 using index_t = std::int64_t;
 using count_t = std::int64_t;
+
+int cpp_resolve_nthreads(int nthreads) {
+    const int max_threads = omp_get_max_threads();
+    return std::clamp(nthreads > 0 ? nthreads : max_threads, 1, max_threads);
+}
+
+#ifdef FASTWILCOXON_WITH_MKL
+static_assert(sizeof(MKL_INT) == sizeof(index_t) && std::is_signed<MKL_INT>::value,
+              "MKL_INT must be a signed 64-bit integer");
+using csr_index_array = py::array_T<MKL_INT, py::array::c_style>;
+namespace {
+    void check_mkl_sparse_status(sparse_status_t status, const char* operation) {
+        if (status != SPARSE_STATUS_SUCCESS) {
+            throw std::runtime_error(
+                std::string(operation) + " failed with oneMKL sparse status " +
+                std::to_string(static_cast<int>(status)));
+        }
+    }
+
+    struct MklSparseHandle {
+        sparse_matrix_t value = nullptr;
+
+        MklSparseHandle() = default;
+        MklSparseHandle(const MklSparseHandle&) = delete;
+        MklSparseHandle& operator=(const MklSparseHandle&) = delete;
+
+        ~MklSparseHandle() {
+            if (value != nullptr) {
+                mkl_sparse_destroy(value);
+            }
+        }
+    };
+
+    struct MklLocalThreads {
+        int previous;
+
+        explicit MklLocalThreads(int nthreads) {
+            previous = mkl_set_num_threads_local(nthreads);
+        }
+
+        MklLocalThreads(const MklLocalThreads&) = delete;
+        MklLocalThreads& operator=(const MklLocalThreads&) = delete;
+
+        ~MklLocalThreads() {
+            mkl_set_num_threads_local(previous);
+        }
+    };
+
+    template <typename T>
+    py::tuple csr_to_csc_mkl_impl(
+        const py::array& csr_data,
+        const csr_index_array& p,
+        const csr_index_array& i,
+        MKL_INT nrow,
+        MKL_INT ncol,
+        MKL_INT nnz,
+        int nthreads
+    ) {
+        py::array_t<T> csc_data(static_cast<py::ssize_t>(nnz));
+        py::array_t<index_t> csc_indptr(static_cast<py::ssize_t>(ncol + 1));
+        py::array_t<index_t> csc_indices(static_cast<py::ssize_t>(nnz));
+        T* csc_values = csc_data.mutable_data();
+        index_t* csc_p = csc_indptr.mutable_data();
+        index_t* csc_i = csc_indices.mutable_data();
+        const T* csr_values = static_cast<const T*>(csr_data.data());
+        const MKL_INT* csr_p = p.data();
+        const MKL_INT* csr_i = i.data();
+        const int threads_to_use = cpp_resolve_nthreads(nthreads);
+
+        {
+            py::gil_scoped_release release;
+            if (nnz == 0) {
+                std::fill(csc_p, csc_p + ncol + 1, 0);
+            } else {
+                // These handles are destroyed before the arrays they borrow and
+                // before the calling thread's oneMKL setting is restored.
+                MklLocalThreads local_threads(threads_to_use);
+                MklSparseHandle source;
+                MklSparseHandle destination;
+                sparse_status_t status;
+
+                // oneMKL's create API takes mutable pointers but does not modify
+                // them; ordering is applied only to the separately allocated result.
+                if constexpr (std::is_same<T, float>::value) {
+                    status = mkl_sparse_s_create_csr(
+                        &source.value,
+                        SPARSE_INDEX_BASE_ZERO,
+                        nrow, ncol,
+                        const_cast<MKL_INT*>(csr_p),
+                        const_cast<MKL_INT*>(csr_p+1),
+                        const_cast<MKL_INT*>(csr_i),
+                        const_cast<T*>(csr_values)
+                    );
+                } else {
+                    status = mkl_sparse_d_create_csr(
+                        &source.value,
+                        SPARSE_INDEX_BASE_ZERO,
+                        nrow, ncol,
+                        const_cast<MKL_INT*>(csr_p),
+                        const_cast<MKL_INT*>(csr_p+1),
+                        const_cast<MKL_INT*>(csr_i),
+                        const_cast<T*>(csr_values)
+                    );
+                }
+                check_mkl_sparse_status(status, "mkl_sparse_create_csr");
+                // destination.value is unordered(indice); mkl_sparse_ordered() will sort it in place.
+                check_mkl_sparse_status(
+                    mkl_sparse_convert_csc(source.value, SPARSE_OPERATION_NON_TRANSPOSE, &destination.value),
+                    "mkl_sparse_convert_csc"
+                );
+                check_mkl_sparse_status(
+                    mkl_sparse_order(destination.value),
+                    "mkl_sparse_order(CSC)"
+                );
+                sparse_index_base_t indexing;
+                MKL_INT output_rows = 0;
+                MKL_INT output_cols = 0;
+                MKL_INT* column_starts = nullptr;
+                MKL_INT* column_ends = nullptr;
+                MKL_INT* row_indices = nullptr;
+                T* values = nullptr;
+                if constexpr (std::is_same<T, float>::value) {
+                    status = mkl_sparse_s_export_csc(
+                        destination.value, &indexing, &output_rows, &output_cols,
+                        &column_starts, &column_ends, &row_indices, &values
+                    );
+                } else {
+                    status = mkl_sparse_d_export_csc(
+                        destination.value, &indexing, &output_rows, &output_cols,
+                        &column_starts, &column_ends, &row_indices, &values
+                    );
+                }
+                check_mkl_sparse_status(status, "mkl_sparse_export_csc");
+                if (indexing != SPARSE_INDEX_BASE_ZERO || output_rows != nrow || 
+                    output_cols != ncol || column_starts == nullptr || 
+                    row_indices == nullptr || values == nullptr) {
+                    throw std::runtime_error("oneMKL returned an unexpected CSC layout");
+                }
+                // Exported pointers belong to the handle, which needs to be export before else ends.
+                // Compact each column into independent NumPy storage, including possible 4-array CSC gaps.
+                csc_p[0] = 0;
+                for (MKL_INT col = 0; col < ncol; ++col) {
+                    const MKL_INT start = column_starts[col];
+                    const MKL_INT end = column_ends != nullptr 
+                        ? column_ends[col] 
+                        : column_starts[col + 1];
+                    if (start < 0 || end < start || end - start > nnz - csc_p[col]) {
+                        throw std::runtime_error("oneMKL returned invalid CSC column offsets");
+                    }
+                    csc_p[col + 1] = csc_p[col] + (end - start);
+                }
+                if (csc_p[ncol] != nnz) {
+                    throw std::runtime_error("oneMKL CSR-to-CSC conversion changed the stored entry count");
+                }
+                
+                #pragma omp parallel for num_threads(threads_to_use) schedule(static)
+                for (MKL_INT col = 0; col < ncol; ++col) {
+                    const index_t count = csc_p[col + 1] - csc_p[col];
+                    if (count != 0) {
+                        const MKL_INT source_offset = column_starts[col];
+                        const index_t target_offset = csc_p[col];
+                        // No arithmetic or casts on values: preserve the input
+                        // precision and the bit patterns of explicit zeros/NaNs.
+                        std::memcpy(csc_values + target_offset, values + source_offset,
+                                    static_cast<size_t>(count) * sizeof(T));
+                        std::memcpy(csc_i + target_offset, row_indices + source_offset,
+                                    static_cast<size_t>(count) * sizeof(index_t));
+                    }
+                }
+            }
+        }
+        return py::make_tuple(csc_data, csc_indptr, csc_indices);
+    }
+} //end of namespace
+#else
+using csr_index_array = py::array_t<index_t, py::array::c_style>;
+#endif
+
+py::tuple cpp_csr_to_csc_mkl(
+    py::array data,
+    csr_index_array p,
+    csr_index_array i,
+    index_t nrow,
+    index_t ncol,
+    int nthreads
+) {
+#ifdef FASTWILCOXON_WITH_MKL
+    // Check sparse data legality
+    if (data.ndim() != 1 || p.ndim() != 1 || i.ndim() != 1) {
+        throw py::value_error("CSR data, indptr and indices must be one-dimensional");
+    }
+    if (!(data.flags() & py::array::c_style)) {
+        throw py::value_error("CSR data must be C-contiguous");
+    }
+    const bool is_float32 = data.dtype().is(py::dtype::of<float>());
+    const bool is_float64 = data.dtype().is(py::dtype::of<double>());
+    if (!is_float32 && !is_float64) {
+        throw py::type_error("CSR data must have native float32 or float64 dtype");
+    }
+    if (nrow < 0 || ncol < 0 ||
+        nrow >= std::numeric_limits<py::ssize_t>::max() ||
+        ncol >= std::numeric_limits<py::ssize_t>::max()) {
+            throw py::value_error("CSR dimensions are out of range");
+    }
+    if (p.size() != nrow + 1 || data.size() != i.size()) {
+        throw py::value_error("CSR array lengths do not match the matrix shape");
+    }
+    const MKL_INT* input_p = p.data();
+    const MKL_INT nnz = input_p[nrow];
+    if (input_p[0] != 0 || nnz < 0 || nnz > data.size() ||
+        ((nrow == 0 || ncol == 0) && nnz != 0)) {
+        throw py::value_error("CSR indptr endpoints do not match the stored entry count");
+    }
+    if (is_float32) {
+        return csr_to_csc_mkl_impl<float>(data, p, i, nrow, ncol, nnz, nthreads);
+    }
+    else {
+        return csr_to_csc_mkl_impl<double>(data, p, i, nrow, ncol, nnz, nthreads);
+    }
+
+#else
+    throw std::runtime_error(
+        "The MKL backend is unavailable: this FastWilcoxon extension was built "
+        "without oneMKL support");
+#endif
+}
 
 inline bool is_tied(double a, double b) {
     return std::abs(a - b) <= TIE_TOL;
@@ -78,12 +313,7 @@ py::array_t<double> cpp_sumGroups_csc(
     std::memset(res_.mutable_data(0, 0), 0, sizeof(double) * ngroups * ncol);
 
     // Set number of threads
-    const int max_threads = omp_get_max_threads();
-    const int threads_to_use = std::clamp(
-        nthreads > 0 ? nthreads : max_threads,
-        1,
-        max_threads
-    );
+    const int threads_to_use = cpp_resolve_nthreads(nthreads);
 
     {
         py::gil_scoped_release release;
@@ -130,12 +360,7 @@ py::array_t<double> cpp_sumGroups_csr(
     std::memset(ptr_res, 0, sizeof(double) * total_size);
 
     // Set number of threads
-    const int max_threads = omp_get_max_threads();
-    const int threads_to_use = std::clamp(
-        nthreads > 0 ? nthreads : max_threads,
-        1,
-        max_threads
-    );
+    const int threads_to_use = cpp_resolve_nthreads(nthreads);
 
     {
         py::gil_scoped_release release;
@@ -199,12 +424,7 @@ py::array_t<double> cpp_sumGroups_csc_T(
     std::memset(ptr_res, 0.0, sizeof(double) * total_size);
 
     // Set number of threads
-    const int max_threads = omp_get_max_threads();
-    const int threads_to_use = std::clamp(
-        nthreads > 0 ? nthreads : max_threads,
-        1,
-        max_threads
-    );
+    const int threads_to_use = cpp_resolve_nthreads(nthreads);
 
     {
         py::gil_scoped_release release;
@@ -264,12 +484,7 @@ py::array_t<double> cpp_sumGroups_csr_T(
     std::memset(res_.mutable_data(0, 0), 0, sizeof(double) * ngroups * nrow);
 
     // Set number of threads
-    const int max_threads = omp_get_max_threads();
-    const int threads_to_use = std::clamp(
-        nthreads > 0 ? nthreads : max_threads,
-        1,
-        max_threads
-    );
+    const int threads_to_use = cpp_resolve_nthreads(nthreads);
     {
         py::gil_scoped_release release;
 
@@ -401,12 +616,7 @@ py::array_t<count_t> cpp_nnzeroGroups_dense(
     std::memset(res_.mutable_data(0, 0), 0, sizeof(count_t) * ngroups * ncols);
 
     // Set number of threads
-    const int max_threads = omp_get_max_threads();
-    const int threads_to_use = std::clamp(
-        nthreads > 0 ? nthreads : max_threads,
-        1,
-        max_threads
-    );
+    const int threads_to_use = cpp_resolve_nthreads(nthreads);
 
     {
         py::gil_scoped_release release;
@@ -448,12 +658,7 @@ py::array_t<count_t> cpp_nnzeroGroups_dense_T(
     std::memset(res_.mutable_data(0, 0), 0, sizeof(count_t) * ngroups * nrows);
 
     // Set number of threads
-    const int max_threads = omp_get_max_threads();
-    const int threads_to_use = std::clamp(
-        nthreads > 0 ? nthreads : max_threads,
-        1,
-        max_threads
-    );
+    const int threads_to_use = cpp_resolve_nthreads(nthreads);
 
     {
         py::gil_scoped_release release;
@@ -492,12 +697,7 @@ py::array_t<count_t> cpp_nnzeroGroups_csc(
     std::memset(res_.mutable_data(0, 0), 0, sizeof(count_t) * ngroups * ncol);
 
     // Set number of threads
-    const int max_threads = omp_get_max_threads();
-    const int threads_to_use = std::clamp(
-        nthreads > 0 ? nthreads : max_threads,
-        1,
-        max_threads
-    );
+    const int threads_to_use = cpp_resolve_nthreads(nthreads);
 
     {
         py::gil_scoped_release release;
@@ -540,12 +740,7 @@ py::array_t<count_t> cpp_nnzeroGroups_csr(
     std::memset(ptr_res, 0, sizeof(count_t) * total_size);
 
     // set number of threads
-    const int max_threads = omp_get_max_threads();
-    const int threads_to_use = std::clamp(
-        nthreads > 0 ? nthreads : max_threads,
-        1,
-        max_threads
-    );
+    const int threads_to_use = cpp_resolve_nthreads(nthreads);
 
     {
         py::gil_scoped_release release;
@@ -606,12 +801,7 @@ py::array_t<count_t> cpp_nnzeroGroups_csc_T(
     std::memset(ptr_res, 0, sizeof(count_t) * total_size);
 
     // Set number of threads
-    const int max_threads = omp_get_max_threads();
-    const int threads_to_use = std::clamp(
-        nthreads > 0 ? nthreads : max_threads,
-        1,
-        max_threads
-    );
+    const int threads_to_use = cpp_resolve_nthreads(nthreads);
 
     {
         py::gil_scoped_release release;
@@ -666,12 +856,8 @@ py::array_t<count_t> cpp_nnzeroGroups_csr_T(
     std::memset(res_.mutable_data(0, 0), 0, sizeof(count_t) * ngroups * nrow);
 
     // Set number of threads
-    const int max_threads = omp_get_max_threads();
-    const int threads_to_use = std::clamp(
-        nthreads > 0 ? nthreads : max_threads,
-        1,
-        max_threads
-    );
+    const int threads_to_use = cpp_resolve_nthreads(nthreads);
+
     {
         py::gil_scoped_release release;
 
@@ -715,12 +901,7 @@ std::vector<std::vector<float>> cpp_rank_matrix_csc(
     std::vector<std::vector<float>> ties(ncol);
 
     // set number of threads
-    const int max_threads = omp_get_max_threads();
-    const int threads_to_use = std::clamp(
-        nthreads > 0 ? nthreads : max_threads,
-        1,
-        max_threads
-    );
+    const int threads_to_use = cpp_resolve_nthreads(nthreads);
 
     {
     	py::gil_scoped_release release;
@@ -802,12 +983,7 @@ py::dict cpp_rank_matrix_dense(
     std::vector<std::list<float>> ties(n_cols);
 
     // Set number of threads
-    const int max_threads = omp_get_max_threads();
-    const int threads_to_use = std::clamp(
-        nthreads > 0 ? nthreads : max_threads,
-        1,
-        max_threads
-    );
+    const int threads_to_use = cpp_resolve_nthreads(nthreads);
 
     {
         py::gil_scoped_release release;
@@ -900,12 +1076,7 @@ void cpp_group_rank_csc(
     }
 
     // set number of threads
-    const int max_threads = omp_get_max_threads();
-    const int threads_to_use = std::clamp(
-        nthreads > 0 ? nthreads : max_threads,
-        1,
-        max_threads
-    );
+    const int threads_to_use = cpp_resolve_nthreads(nthreads);
 
     {
         py::gil_scoped_release release;
@@ -967,12 +1138,7 @@ void cpp_group_rank_dense(
     index_t n_cols = static_cast<index_t>(x_.shape(1));
 
     // set number of threads
-    const int max_threads = omp_get_max_threads();
-    const int threads_to_use = std::clamp(
-        nthreads > 0 ? nthreads : max_threads,
-        1,
-        max_threads
-    );
+    const int threads_to_use = cpp_resolve_nthreads(nthreads);
 
     {
         py::gil_scoped_release release;
@@ -1016,6 +1182,25 @@ void cpp_group_rank_dense(
 PYBIND11_MODULE(_fastwilcoxon, m) {
 
     m.doc() = "High-performance matrix operations for wilcoxon based statistics and ranking";
+    
+    m.def("cpp_resolve_nthreads", &cpp_resolve_nthreads,
+          "Clamp a thread request to the calling thread's OpenMP maximum",
+          py::arg("nthreads"));
+
+#ifdef FASTWILCOXON_WITH_MKL
+    m.attr("has_mkl") = py::bool_(true);
+#else
+    m.attr("has_mkl") = py::bool_(false);
+#endif
+
+    m.def("cpp_csr_to_csc_mkl", &cpp_csr_to_csc_mkl,
+          "Convert CSR to CSC using oneMKL",
+          py::arg("data").noconvert(),
+          py::arg("p").noconvert(),
+          py::arg("i").noconvert(),
+          py::arg("nrow"),
+          py::arg("ncol"),
+          py::arg("nthreads"));
 
     m.def("cpp_sumGroups_csc", &cpp_sumGroups_csc,
           "Sum groups for CSC sparse matrix (groups by rows)",

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import ctypes
 import numpy as np
+import scipy.sparse as sp
 from typing import List, Optional
 
 try:
@@ -23,6 +24,101 @@ integer_dtypes = {
     np.dtype('uint8'), np.dtype('uint16'), np.dtype('uint32'), np.dtype('uint64'),
     np.dtype('int8'), np.dtype('int16'), np.dtype('int32'), np.dtype('int64')
 }
+
+def csr_to_csc(X, backend: str = "auto", nthreads: int = 1):
+    """
+    Convert CSR to an independent, writable SciPy CSC matrix.
+
+    Parameters
+    ----------
+    X : scipy.sparse.csr_matrix
+        Input sparse matrix in CSR format.
+    backend : str, optional
+        Backend to use for conversion. ``auto``, ``mkl``, ``graphblas`` or ``scipy``.
+    nthreads : int, optional
+        Number of threads to use for computation. Default is 1.
+        If nthread <= 0 or >= largest threads, uses all available threads.
+    """
+    if backend not in ("auto", "mkl", "graphblas", "scipy"):
+        raise ValueError("backend must be 'auto', 'mkl', 'graphblas' or 'scipy'")
+    if not isinstance(X, sp.csr_matrix):
+        raise TypeError("Input matrix X must be a scipy.sparse.csr_matrix")
+    if X.data.dtype not in (np.dtype("float32"), np.dtype("float64")):
+        raise TypeError("X.data must have float32 or float64 dtype")
+    if not X.has_canonical_format:
+        raise ValueError("X must have sorted CSR indices without duplicate coordinates")
+    nthreads = standardiz_nthreads(nthreads)
+    threads_to_use = fw.cpp_resolve_nthreads(nthreads)
+    nnz = X.nnz
+    values = np.ascontiguousarray(X.data[:nnz])
+
+    if backend == "auto":
+        if getattr(fw, "has_mkl", False):
+            backend = "mkl"
+        elif sys.version_info >= (3, 10):
+            try:
+                import graphblas as gb
+                if gb.backend is None:
+                    gb.init("suitesparse", blocking=True)
+                backend = "graphblas" if gb.backend == "suitesparse" else "scipy"
+            except ImportError:
+                backend = "scipy"
+        else:
+            backend = "scipy"
+
+    if backend == "mkl":
+        if not getattr(fw, "has_mkl", False):
+            raise RuntimeError(
+                "This FastWilcoxon extension was built without oneMKL support. "
+                "MKL is enabled in Linux x86_64 wheels."
+            )
+        indptr_in = np.ascontiguousarray(X.indptr, dtype=np.int64)
+        indices_in = np.ascontiguousarray(X.indices[:nnz], dtype=np.int64)
+        data, indptr, indices = fw.cpp_csr_to_csc_mkl(
+            values, indptr_in, indices_in, X.shape[0], X.shape[1], threads_to_use
+        )
+    elif backend == "graphblas":
+        if sys.version_info < (3, 10):
+            raise RuntimeError("The graphblas backend requires Python 3.10 or newer")
+        try:
+            import graphblas as gb
+        except ImportError as error:
+            raise ImportError(
+                "The graphblas backend requires FastWilcoxon[graphblas]."
+            ) from error
+        if gb.backend is None:
+            gb.init("suitesparse", blocking=True)
+        if gb.backend != "suitesparse":
+            raise RuntimeError("The graphblas backend requires SuiteSparse:GraphBLAS")
+        with gb.ss.Context(nthreads=threads_to_use):
+            G = gb.Matrix.ss.import_csr(
+                nrows=X.shape[0], ncols=X.shape[1],
+                indptr=X.indptr, col_indices=X.indices[:nnz], values=values,
+                sorted_cols=True, is_iso=False, take_ownership=False,
+            )
+            G.wait("materialize")
+            info = G.ss.export("csc", sort=True, give_ownership=True)
+
+        data = info["values"]
+        if info["is_iso"]:
+            data = np.full(nnz, data[0], dtype=data.dtype)
+        # SuiteSparse exports uint64 offsets. Valid SciPy dimensions/nnz fit
+        # signed int64, so a same-width view avoids copying the output again.
+        indptr = info["indptr"].view(np.int64)
+        indices = info["row_indices"].view(np.int64)
+    else:
+        # Use SciPy's built-in conversion as a fallback
+        return X.tocsc()
+
+    # Assign after construction to preserve int64 even for small matrices.
+    result = sp.csc_matrix(X.shape, dtype=X.dtype)
+    result.data = np.ascontiguousarray(data)
+    result.indptr = indptr
+    result.indices = indices
+    result.has_sorted_indices = True
+    result.has_canonical_format = True
+    return result
+
 
 def validate_int_scalar(name: str, value, *, positive: bool = False) -> int:
     """

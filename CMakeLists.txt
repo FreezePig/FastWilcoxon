@@ -15,6 +15,17 @@ execute_process(
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
+# oneMKL static CPU archives are build-only Python dependencies on Linux x86_64.
+# Keep one BLAS provider per extension: MKL builds do not link OpenBLAS as well.
+set(FASTWILCOXON_MKL_DEFAULT OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+    set(FASTWILCOXON_MKL_DEFAULT ON)
+endif()
+option(FASTWILCOXON_ENABLE_MKL "Build the oneMKL CSR-to-CSC backend" ${FASTWILCOXON_MKL_DEFAULT})
+if(FASTWILCOXON_ENABLE_MKL AND NOT FASTWILCOXON_MKL_DEFAULT)
+    message(FATAL_ERROR "The bundled static oneMKL build supports Linux x86_64 only")
+endif()
+
 # --- 3. Find Openmp ---
 if(APPLE)
     # 1. Find brew installed libomp
@@ -71,6 +82,7 @@ else()
 endif()
 
 # ---4. OpenBLAS setup ---
+if(NOT FASTWILCOXON_ENABLE_MKL)
 if(WIN32)
     # detect x64
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -126,6 +138,7 @@ else()
     endif()
     message(STATUS "Found BLAS libraries: ${BLAS_LIBRARIES}")
 endif()
+endif()
 
 # --- 5. define target module ---
 pybind11_add_module(_fastwilcoxon main.cpp)
@@ -133,8 +146,38 @@ pybind11_add_module(_fastwilcoxon main.cpp)
 # NumPy headers (only if needed)
 target_include_directories(_fastwilcoxon PRIVATE ${NUMPY_INCLUDE_DIR})
 
-# BLAS
-if(WIN32)
+# BLAS: the three static archives contain MKL's CPU dispatch kernels as well.
+# Unlike dynamic MKL, no additional ISA libraries need to be found at runtime.
+if(FASTWILCOXON_ENABLE_MKL)
+    execute_process(
+        COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/find_mkl_static.py"
+        OUTPUT_VARIABLE FASTWILCOXON_MKL_FILES
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        RESULT_VARIABLE FASTWILCOXON_MKL_RESULT
+    )
+    if(NOT FASTWILCOXON_MKL_RESULT EQUAL 0)
+        message(FATAL_ERROR "oneMKL static build dependencies were not found in the build environment")
+    endif()
+    list(GET FASTWILCOXON_MKL_FILES 0 MKL_INCLUDE_DIR)
+    list(GET FASTWILCOXON_MKL_FILES 1 MKL_ILP64_ARCHIVE)
+    list(GET FASTWILCOXON_MKL_FILES 2 MKL_GNU_THREAD_ARCHIVE)
+    list(GET FASTWILCOXON_MKL_FILES 3 MKL_CORE_ARCHIVE)
+    list(GET FASTWILCOXON_MKL_FILES 4 MKL_LICENSE_FILE)
+    find_package(Threads REQUIRED)
+    target_compile_definitions(_fastwilcoxon PRIVATE FASTWILCOXON_WITH_MKL MKL_ILP64)
+    target_include_directories(_fastwilcoxon PRIVATE "${MKL_INCLUDE_DIR}")
+    target_link_libraries(_fastwilcoxon PRIVATE
+        "-Wl,--start-group"
+        "${MKL_ILP64_ARCHIVE}"
+        "${MKL_GNU_THREAD_ARCHIVE}"
+        "${MKL_CORE_ARCHIVE}"
+        "-Wl,--end-group"
+        Threads::Threads m "${CMAKE_DL_LIBS}"
+    )
+    # Keep bundled static BLAS symbols private to this extension.
+    target_link_options(_fastwilcoxon PRIVATE "-Wl,--exclude-libs,ALL")
+    install(FILES "${MKL_LICENSE_FILE}" DESTINATION licenses RENAME oneMKL-LICENSE.txt)
+elseif(WIN32)
     target_include_directories(_fastwilcoxon PRIVATE "${OPENBLAS_ROOT}/include")
     target_link_libraries(_fastwilcoxon PRIVATE "${OPENBLAS_ROOT}/lib/libopenblas.dll.a")
 else()
