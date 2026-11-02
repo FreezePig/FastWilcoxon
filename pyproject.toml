@@ -20,6 +20,8 @@ dependencies = [
     "pandas",
     "anndata",
     "scipy>=1.10,<2",
+    # macOS wheels share this package's libomp with the optional GraphBLAS frontend.
+    "suitesparse-graphblas==9.4.5.0; sys_platform == 'darwin' and python_version >= '3.10'",
     "statsmodels",
     "adjustText",
     "matplotlib",
@@ -54,7 +56,7 @@ before-test = "pip install --only-binary=numpy,h5py,scipy 'numpy<2.3' h5py 'scip
 environment = { PIP_ONLY_BINARY = ":all:" }
 
 [tool.cibuildwheel.macos]
-repair-wheel-command = "delocate-listdeps {wheel} && delocate-wheel --require-archs {delocate_archs} -w {dest_dir} -v {wheel}"
+repair-wheel-command = 'python cmake/repair_macos_wheel.py "{wheel}" "{dest_dir}" "{delocate_archs}"'
 
 [[tool.cibuildwheel.overrides]]
 select = "*-macosx_x86_64"

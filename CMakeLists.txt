@@ -197,6 +197,8 @@ endif()
 
 # macOS RPATH
 if(APPLE)
+    # Leave space for the shared OpenMP install name written during wheel repair.
+    target_link_options(_fastwilcoxon PRIVATE "-Wl,-headerpad_max_install_names")
     set_target_properties(_fastwilcoxon PROPERTIES
             INSTALL_RPATH "@loader_path"
             BUILD_WITH_INSTALL_RPATH TRUE

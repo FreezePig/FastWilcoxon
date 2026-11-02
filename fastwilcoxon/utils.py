@@ -24,7 +24,7 @@ def _(X: np.ndarray, nthreads: int = 1) -> Dict:
 @rank_matrix.register
 def _(X: sp.csr_matrix, nthreads: int = 1) -> Dict:
     """Rank the rows of a sparse CSR matrix"""
-    X_csc = csr_to_csc(X, backend="mkl", nthreads=nthreads)
+    X_csc = csr_to_csc(X, backend="auto", nthreads=nthreads)
 
     rank_data_out = np.zeros_like(X_csc.data, dtype=np.float64)
     ties = rank_matrix_csc(X_csc.data, X_csc.indptr, rank_data_out, 
@@ -136,7 +136,7 @@ def _(X: np.ndarray, groups: np.ndarray, nthreads: int = 1) -> dict:
 @group_rank.register
 def _(X: sp.csr_matrix, groups: np.ndarray, nthreads: int = 1) -> dict:
     """Grouply rank the cols of a sparse CSR matrix"""
-    X_csc = csr_to_csc(X, backend="mkl", nthreads=nthreads)
+    X_csc = csr_to_csc(X, backend="auto", nthreads=nthreads)
     rank_data_out = np.zeros_like(X_csc.data, dtype=np.float64)
     group_rank_csc(X_csc.data, X_csc.indptr, X_csc.indices, rank_data_out,
                    groups, X_csc.shape[0], X_csc.shape[1], nthreads)

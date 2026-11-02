@@ -1,11 +1,20 @@
 """Run against the installed, repaired wheel in each cibuildwheel test env."""
 
 import platform
+import ctypes
+from importlib.metadata import distribution
+from pathlib import Path
 import subprocess
 import sys
 
 import numpy as np
 import scipy.sparse as sp
+
+# Run in a fresh child process to verify the reverse import order as well.
+if "--graphblas-first" in sys.argv:
+    import graphblas as gb
+    gb.init("suitesparse", blocking=True)
+    gb.ss.config["nthreads"] = 2
 
 from fastwilcoxon import csr_to_csc
 from fastwilcoxon import _fastwilcoxon as native
@@ -59,6 +68,29 @@ for order in ("C", "F"):
     matrix = np.array(X, order=order)
     np.testing.assert_array_equal(sumGroups_dense(matrix, groups, 2), np.vstack((X[0] + X[2], X[1])))
     np.testing.assert_array_equal(sumGroups_dense_T(matrix, groups, 2), np.vstack((X[:, 0] + X[:, 2], X[:, 1])))
+
+if sys.platform == "darwin":
+    dyld = ctypes.CDLL(None)
+    dyld._dyld_image_count.restype = ctypes.c_uint32
+    dyld._dyld_get_image_name.argtypes = [ctypes.c_uint32]
+    dyld._dyld_get_image_name.restype = ctypes.c_char_p
+    loaded_openmp = set()
+    for index in range(dyld._dyld_image_count()):
+        name = Path(dyld._dyld_get_image_name(index).decode())
+        if name.match("libomp*.dylib") or name.match("libiomp*.dylib"):
+            loaded_openmp.add(name.resolve())
+    assert len(loaded_openmp) == 1, loaded_openmp
+    if sys.version_info >= (3, 10):
+        provider = Path(distribution("suitesparse-graphblas").locate_file(
+            "suitesparse_graphblas/.dylibs/libomp.dylib"
+        )).resolve()
+        assert loaded_openmp == {provider}, loaded_openmp
+        # No private libomp copy should remain in FastWilcoxon itself.
+        assert not list(Path(native.__file__).parent.rglob("libomp*.dylib"))
+        if "--graphblas-first" not in sys.argv:
+            subprocess.run([sys.executable, str(Path(__file__).resolve()),
+                            "--graphblas-first"], check=True)
+    print("Single macOS OpenMP runtime:", loaded_openmp, flush=True)
 
 print("Installed-wheel CSR conversion and existing BLAS sums passed:", backends,
       "has_mkl=", native.has_mkl, "extension=", native.__file__)
