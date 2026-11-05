@@ -12,19 +12,19 @@ from functools import singledispatch
 # ====== 1. ranking functions ======
 
 @singledispatch
-def rank_matrix(X, nthreads: int = 1):
+def rank_matrix(X, nthreads: int = 1, backend: str = "auto"):
     """General interface for matrix sorting"""
     raise NotImplementedError(f"rank_matrix not implemented for type {type(X)}")
 
 @rank_matrix.register
-def _(X: np.ndarray, nthreads: int = 1) -> Dict:
+def _(X: np.ndarray, nthreads: int = 1, backend: str = "auto") -> Dict:
     """Rank the rows of a dense numpy array"""
     return rank_matrix_dense(X, nthreads)
 
 @rank_matrix.register
-def _(X: sp.csr_matrix, nthreads: int = 1) -> Dict:
+def _(X: sp.csr_matrix, nthreads: int = 1, backend: str = "auto") -> Dict:
     """Rank the rows of a sparse CSR matrix"""
-    X_csc = csr_to_csc(X, backend="auto", nthreads=nthreads)
+    X_csc = csr_to_csc(X, backend=backend, nthreads=nthreads)
 
     rank_data_out = np.zeros_like(X_csc.data, dtype=np.float64)
     ties = rank_matrix_csc(X_csc.data, X_csc.indptr, rank_data_out, 
@@ -33,7 +33,7 @@ def _(X: sp.csr_matrix, nthreads: int = 1) -> Dict:
     return {'X_ranked': X_ranked, 'ties': ties}
     
 @rank_matrix.register  
-def _(X: sp.csc_matrix, nthreads: int = 1) -> Dict:
+def _(X: sp.csc_matrix, nthreads: int = 1, backend: str = "auto") -> Dict:
     """CSC sparse matrix ranking"""
     # Modify X.data in place
     X_copy = X.copy()  # Avoid modifying the original matrix
@@ -122,21 +122,21 @@ def _(X: sp.csr_matrix, groups: np.ndarray, trans: bool = False, nthreads: int =
 # ====== 4. group ranking function ======
 
 @singledispatch
-def group_rank(X, groups:np.ndarray, nthreads: int = 1):
+def group_rank(X, groups:np.ndarray, nthreads: int = 1, backend: str = "auto"):
     """General interface for grouply ranking matrix generating(for gini coefficient)"""
     raise NotImplementedError(f"rank_matrix not implemented for type {type(X)}")
 
 @group_rank.register
-def _(X: np.ndarray, groups: np.ndarray, nthreads: int = 1) -> dict:
+def _(X: np.ndarray, groups: np.ndarray, nthreads: int = 1, backend: str = "auto") -> dict:
     """Grouply rank the cols of a dense numpy array"""
     rank_data_out = np.zeros_like(X, dtype=np.float64)
     group_rank_dense(X, rank_data_out, groups, nthreads)
     return {'ranked': rank_data_out, 'X': X}
 
 @group_rank.register
-def _(X: sp.csr_matrix, groups: np.ndarray, nthreads: int = 1) -> dict:
+def _(X: sp.csr_matrix, groups: np.ndarray, nthreads: int = 1, backend: str = "auto") -> dict:
     """Grouply rank the cols of a sparse CSR matrix"""
-    X_csc = csr_to_csc(X, backend="auto", nthreads=nthreads)
+    X_csc = csr_to_csc(X, backend=backend, nthreads=nthreads)
     rank_data_out = np.zeros_like(X_csc.data, dtype=np.float64)
     group_rank_csc(X_csc.data, X_csc.indptr, X_csc.indices, rank_data_out,
                    groups, X_csc.shape[0], X_csc.shape[1], nthreads)
@@ -144,7 +144,7 @@ def _(X: sp.csr_matrix, groups: np.ndarray, nthreads: int = 1) -> dict:
     return {'ranked': X_group_ranked, 'X': X_csc}
 
 @group_rank.register
-def _(X: sp.csc_matrix, groups: np.ndarray, nthreads: int = 1) -> dict:
+def _(X: sp.csc_matrix, groups: np.ndarray, nthreads: int = 1, backend: str = "auto") -> dict:
     """Grouply rank the cols of a sparse CSC matrix"""
     X_copy = X.copy()  # Avoid modifying the original matrix
     rank_data_out = np.zeros_like(X_copy.data, dtype=np.float64)
@@ -217,11 +217,11 @@ def compute_pval(ustat: np.ndarray, ties: List, N: int, n1n2: np.ndarray) -> Tup
     return pvals, z_norm
 
 def compute_nnz_gini(X: Union[np.ndarray, sp.csc_matrix, sp.csr_matrix],
-                 groups: np.ndarray, nthreads: int = 1) -> np.ndarray:
+                 groups: np.ndarray, nthreads: int = 1, backend: str = "auto") -> np.ndarray:
     """Compute Gini coefficients for groups in a matrix based on non-zero counts"""
     group_nnz = nnz_groups(X, groups, nthreads=nthreads)
     group_sum = sum_groups(X, groups, nthreads=nthreads)
-    group_rank_result = group_rank(X, groups, nthreads)
+    group_rank_result = group_rank(X, groups, nthreads, backend=backend)
     ranks = group_rank_result['ranked']
     new_X = group_rank_result['X']
     if sp.isspmatrix_csc(ranks):

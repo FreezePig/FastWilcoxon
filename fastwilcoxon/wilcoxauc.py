@@ -25,6 +25,7 @@ def wilcoxauc(
     layer: Optional[str] = None,
     key_added: Optional[str] = None,
     # ===== other params =====
+    backend: str = "auto",
     verbose: bool = True,
     nthreads: int = -1,
     **kwargs
@@ -68,6 +69,8 @@ def wilcoxauc(
         Key in adata.uns to store results.
     
     # === other parameters ===
+    backend: str (default "auto")
+        Backend for csr to csc conversion. Options: "auto", "mkl", "graphblas" and "scipy".
     verbose : bool (default True)
         Print progress messages.
     nthreads : int (default -1)
@@ -143,7 +146,8 @@ def wilcoxauc(
 
     # 5. Core computation
     if reference == 'rest':
-        core_results_ = _wilcoxauc_core(X, code_dict['y_encoded'], corr_method, nthreads, verbose=verbose)
+        core_results_ = _wilcoxauc_core(X, code_dict['y_encoded'], corr_method, 
+                                        nthreads, backend=backend, verbose=verbose)
         # slice results into only target groups
         target_indices = code_dict['target_codes']
         results_ = {
@@ -186,7 +190,8 @@ def wilcoxauc(
             y_sub = np.zeros(np.sum(combined_mask), dtype=np.int32)
             y_sub[ref_mask[combined_mask]] = 1  # reference group as 1
 
-            core_results_sub = _wilcoxauc_core(X_sub, y_sub, corr_method, nthreads, verbose = verbose)
+            core_results_sub = _wilcoxauc_core(X_sub, y_sub, corr_method, nthreads, 
+                                               backend=backend, verbose=verbose)
 
             # Store results
             for key in results_.keys():
@@ -228,6 +233,7 @@ def find_all_markers(
     corr_method: Literal['benjamini-hochberg', 'bonferroni'] = 'benjamini-hochberg',
     use_raw: bool = False,
     layer: Optional[str] = None,
+    backend: str = "auto",
     verbose: bool = True,
     nthreads: int = -1,
     **kwargs
@@ -264,6 +270,8 @@ def find_all_markers(
         Use adata.raw if available.
     layer : str, optional
         Use adata.layers[layer] instead of adata.X.
+    backend: str, default "auto"
+        Backend for csr to csc conversion. Options: "auto", "mkl", "graphblas" and "scipy".
     verbose : bool, default True;
         Print progress messages.
     nthreads : int, default -1
@@ -289,6 +297,7 @@ def find_all_markers(
                         layer=layer,
                         key_added="_temp_key",
                         copy=False,
+                        backend=backend,
                         verbose=verbose,
                         nthreads=nthreads,
                         **kwargs)
@@ -321,6 +330,7 @@ def find_markers(
     corr_method: Literal["benjamini-hochberg", "bonferroni"] = "benjamini-hochberg",
     use_raw: bool = False,
     layer: Optional[str] = None,
+    backend: str = "auto",
     verbose: bool = True,
     nthreads: int = -1,
     **kwargs
@@ -356,6 +366,7 @@ def find_markers(
                             use_raw=use_raw,
                             layer=layer,
                             key_added="_temp_key",
+                            backend=backend,
                             verbose=verbose,
                             nthreads=nthreads,
                             **kwargs)
@@ -387,6 +398,7 @@ def find_markers(
                                     use_raw=use_raw,
                                     layer=layer,
                                     key_added="_temp_key",
+                                    backend=backend,
                                     verbose=verbose,
                                     nthreads=nthreads,
                                     **kwargs)
@@ -416,6 +428,7 @@ def find_markers(
                                     use_raw=use_raw,
                                     layer=layer,
                                     key_added="_temp_key",
+                                    backend=backend,
                                     verbose=verbose,
                                     nthreads=nthreads,
                                     **kwargs)
@@ -443,6 +456,8 @@ def calc_gini(
     use_raw: bool = False,
     layer: Optional[str] = None,
     # ===== other params =====
+    backend: str = "auto",
+    nthreads: int = -1,
     verbose: bool = True,
     **kwargs
     
@@ -469,7 +484,12 @@ def calc_gini(
         Use adata.raw if available.
     layer : str, optional
         Use adata.layers[layer] instead of adata.X.
-        
+
+    # === other parameters ===
+    backend: str (default "auto")
+        Backend for parallel computation. Options: "auto", "mkl", "graphblas" and "scipy".
+    nthreads: int (default -1)
+        Number of threads to use for computation. -1 means using all available cores.
     Returns
     -------
     AnnData or pd.DataFrame
@@ -492,7 +512,7 @@ def calc_gini(
     
     # 3. calculate gini
     code_dict = _encode_groups(y ,'all')
-    gini = compute_nnz_gini(X, code_dict['y_encoded'], nthreads=-1)
+    gini = compute_nnz_gini(X, code_dict['y_encoded'], backend=backend, nthreads=nthreads)
 
     # 4. Format results
     long_df = _format_results({'gini': gini}, code_dict['target_codes'], 
@@ -818,7 +838,8 @@ def _postfilter_markers(_result,
     return markers
 
 
-def _wilcoxauc_core(X, y, corr_method, nthreads, verbose):
+def _wilcoxauc_core(X, y, corr_method, nthreads, 
+                    backend: str = "auto", verbose=False):
     """
     calculate wilcoxauc statistics, including:
     avgExpr, logfoldchanges, score(norm U), 
@@ -837,7 +858,7 @@ def _wilcoxauc_core(X, y, corr_method, nthreads, verbose):
 
     start_time = time.time()
     # three type of X: dense ndarray, csr_matrix, csc_matrix
-    rank_result = rank_matrix(X, nthreads=nthreads)
+    rank_result = rank_matrix(X, nthreads=nthreads, backend=backend)
     # calculate pvals matrix and z-norm score matrix
     X_ranked = rank_result['X_ranked'] # sp.csr_matrix or np.ndarray
     ties_info = rank_result['ties'] # List of lists

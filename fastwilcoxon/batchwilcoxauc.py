@@ -35,6 +35,7 @@ class MarkerTestCache:
         layer: Optional[str] = None,
         use_raw: bool = False,
         copy: bool = True,
+        backend: str = "auto",
         nthreads: int = -1,
     ) -> "MarkerTestCache":
         """Create a MarkerTestCache from an AnnData object."""
@@ -50,7 +51,7 @@ class MarkerTestCache:
             source = f"adata.layers[{layer!r}]"
 
         obs_names = adata.obs_names.values
-        rank_result = rank_matrix(X, nthreads=nthreads)
+        rank_result = rank_matrix(X, backend=backend, nthreads=nthreads)
         ranks = rank_result["X_ranked"]
         ties = rank_result["ties"]
 
@@ -73,13 +74,14 @@ class MarkerTestCache:
         matrix: Union[sp.csc_matrix, sp.csr_matrix, np.ndarray],
         gene_names: np.ndarray,
         obs_names: np.ndarray,
+        backend: str = "auto",
         nthreads: int = -1,
     ) -> "MarkerTestCache":
         """Create a MarkerTestCache from a matrix."""
 
         matrix, gene_names = prefilter_matrix(matrix, var_names=gene_names)
         gene_names = np.asarray(gene_names)
-        rank_result = rank_matrix(matrix, nthreads=nthreads)
+        rank_result = rank_matrix(matrix, backend=backend, nthreads=nthreads)
         ranks = rank_result["X_ranked"]
         ties = rank_result["ties"]
 
